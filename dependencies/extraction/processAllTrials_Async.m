@@ -131,6 +131,7 @@ if params.isSLAP2
         labeled = ~isnan(meanIM(:,:,params.activityChannel)) & labeled>3*prctile(labeled(~isnan(labeled)), 25); %labeled pixels
         
         meanPx = reshape(meanIM, numel(labeled), numChannels);
+        meanPx = meanPx(:, orderedChannels); %meanIM is in raw channel order; match the reordered frames below
         mLabeled = meanPx(labeled,:);
 
         %pixels to sample: sources, labeled pixels (global activity) and user
@@ -155,10 +156,13 @@ if params.isSLAP2
         for bix = nBlocks:-1:1
             fIxs  = blockEdges(bix):(blockEdges(bix+1)-1);
             nFramesInBlock = length(fIxs);
-            %as getImages(orderedChannels, frameLines(fIxs), ceil(dt), 1, 1), trimmed
-            %and interpolated with interpFrames, at the sampled pixels only
-            [Yq, Fq] = slap2FramesAt(S2data, orderedChannels, frameLines(fIxs), ceil(dt), ...
+            %as getImages(1:numChannels, frameLines(fIxs), ceil(dt), 1, 1), trimmed
+            %and interpolated with interpFrames, at the sampled pixels only.
+            %Channels are read in raw file order and reordered here: the slap2
+            %reader returns channels in file order regardless of the order requested
+            [Yq, Fq] = slap2FramesAt(S2data, 1:numChannels, frameLines(fIxs), ceil(dt), ...
                 alignDataSlap2.trimRows, alignDataSlap2.trimCols, rD, cD, motionR(fIxs), motionC(fIxs));
+            Yq = Yq(:, orderedChannels, :);
 
             IMsel(:, :, fIxs) = Yq(qpos(selPx2D(:)),:,:);
             Finvsel(:,fIxs) = Fq(qpos(selPx2D(:)),:);
@@ -395,6 +399,8 @@ Lu = Ls(use); parts = cell(numel(Lu), nCh); wparts = cell(numel(Lu), 1); cols = 
 for j = 1:numel(Lu)
     L = Lu(j); k = find(li == L);
     D = cat(3, ld{k}); D = double(D(sel{L}, :, :));   % pixels x channels x cycles
+    assert(size(D, 2) == nCh, 'GIAnT:channelCountMismatch', ...
+        'SLAP2 reader returned %d channels; expected %d.', size(D, 2), nCh);
     d = times(:) - lineTimes(k);
     [fi, ki] = find(abs(d) < dtRead);
     Wk = sparse(fi, ki, exp(-abs(d(abs(d) < dtRead)) / dt), nF, numel(k));   % frames x cycles

@@ -10,6 +10,15 @@ else
 end
 % Fixed values; user/GUI/JSON cannot override these in SILo
 params.minBaseline = 0.01;
+% localizeOnly (hidden): stop after source selection, skip trace extraction,
+% and write act_im + inputs of source selection to params.localizeOutputFile
+% instead of experiment_summary.h5 (the trial table is left untouched)
+if ~isfield(params, 'localizeOnly') || isempty(params.localizeOnly)
+    params.localizeOnly = false;
+end
+if params.localizeOnly && (~isfield(params, 'localizeOutputFile') || isempty(params.localizeOutputFile))
+    error('SILo:MissingLocalizeOutputFile', 'params.localizeOnly requires params.localizeOutputFile.');
+end
 if ~nargin
     [trialTablefn, dr] =  uigetfile('*.h5', 'Select a trial_table file', '*trial_table*.h5' );
 else
@@ -244,7 +253,6 @@ for DMDix = nDMDs:-1:1
     medIM = nanmedfilt2(actIM, 5.*[1 1]);
     actIM = actIM-medIM; %subtract a local baseline
     exptSummary.actIM{DMDix} = actIM;
-    sz = size(actIM);
 
     %Mask out somata from activity image
     somaMask = false(size(actIM));
@@ -257,47 +265,24 @@ for DMDix = nDMDs:-1:1
         end
     end
 
-    thetaf = getActImPeaks(actIM,params.peakth,somaMask,params.minPeakDistance);
-
-    sources = struct('R', [], 'C', [], 'V', []);
-    totalPix = sum(~isnan(actIM(:)) & ~somaMask(:));
-    if totalPix == 0 || isempty(thetaf)
-        k = 0;
-    else
-        sources.R = round(thetaf(:,2));
-        sources.C = round(thetaf(:,3));
-        sources.V = thetaf(:,1);
-        
-        % prune source seeds that are the same
-        [~, uniqueIx] = unique([sources.R(:) sources.C(:)], 'rows', 'stable');
-        sources.R = sources.R(uniqueIx);
-        sources.C = sources.C(uniqueIx);
-        sources.V = sources.V(uniqueIx);
-        k = length(sources.R);
-    end
-
-    %select regions near synapses, aligned across movies
-    selPix = false([sz(1:2) k]);
-    params.selRadius = ceil(2*params.dXY);
-    for sourceIx = k:-1:1
-        rr = round(sources.R(sourceIx));
-        cc = round(sources.C(sourceIx));
-        selPix(rr,cc,sourceIx) = true;
-        selPix(:,:,sourceIx) = imdilate(selPix(:,:,sourceIx), strel('disk',params.selRadius));
-    end
+    %detect sources and build their pixel masks
     pxAlwaysValid = mean(isnan(meanAligned(:,:,1,validTrials)),4)<params.nanThresh;
-    selPix = selPix & repmat(pxAlwaysValid, 1, 1, k); %exclude poorly measured pixels
+    params.selRadius = ceil(2*params.dXY);
+    [sources, selPix] = selectSources(actIM, somaMask, pxAlwaysValid, params);
+    disp(['Number of sources: ' int2str(numel(sources.R))]);
 
-    %prune any sources that got clipped by pixel selection
-    centerValid = pxAlwaysValid(sub2ind(size(pxAlwaysValid), sources.R, sources.C));
-    keepSources = squeeze(sum(selPix, [1 2]))>5 & centerValid(:);
-    if k > 0
-        sources.R = sources.R(keepSources);
-        sources.C = sources.C(keepSources);
-        sources.V = sources.V(keepSources);
+    if params.localizeOnly
+        %save what source selection needs and skip trace extraction
+        loc = struct();
+        loc.act_im = actIM;
+        loc.soma_mask = somaMask;
+        loc.px_always_valid = pxAlwaysValid;
+        loc.mean_im = exptSummary.meanIM{DMDix};
+        loc.valid_trials = validTrials(:)';
+        loc.sources = sources;
+        locOut.(sprintf('Path%d', DMDix)) = loc;
+        continue
     end
-    selPix = selPix(:,:,keepSources);
-    disp(['Number of sources: ' int2str(sum(keepSources))]);
         
     %for each file, load high res data and refine
     params.tau_full=params.tau_s*params.analyzeHz;
@@ -309,7 +294,7 @@ for DMDix = nDMDs:-1:1
         roiData = ROIs(DMDix).roiData;
     end
 
-    if any(keepSources)
+    if ~isempty(sources.R)
         fns = trialTable.source_extraction.fn_raw(DMDix,:);
         if params.isSLAP2
             if isfield(trialTable, 'datadr') && ~isempty(trialTable.datadr)
@@ -347,6 +332,13 @@ delete(gcp('nocreate'));
 pause(5);
 
 params.endTime = char(datetime('now','TimeZone','local','Format','yyyy-MM-dd''T''HH:mm:ss.SSSZZZZZ'));
+
+if params.localizeOnly
+    locOut.params = params;
+    trySave(@() saveStructToH5(locOut, params.localizeOutputFile), 'localization');
+    disp(['Done SILo (localizeOnly): ' params.localizeOutputFile])
+    return
+end
 
 trialTable.source_extraction.analysis_params = params;
 

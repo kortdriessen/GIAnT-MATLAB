@@ -57,16 +57,25 @@ end
 DMDixs = [1 2];
 nDMDs = numel(DMDixs);
 refStack = struct();
-%find the files within the entire folder structure named REFERENCE
+%find the files within the entire folder structure named REFERENCE. If the
+%acquisition folder has none, search one level up (Wisconsin layout keeps one
+%reference stack per location, in <loc>/ref, shared by all acquisitions)
 for DMDix = DMDixs
     pathKey = ['Path' int2str(DMDix)];
-    list = dir([dr filesep '**' filesep '*DMD' int2str(DMDix) '*_CONFIG1-REFERENCE*']);
-    if isempty(list)
-        list = dir([dr filesep '**' filesep '*DMD' int2str(DMDix) '*-REFERENCE*']);
+    refSearchDrs = {dr, fileparts(strip(dr, 'right', filesep))};
+    for refSearchIx = 1:numel(refSearchDrs)
+        refSearchDr = refSearchDrs{refSearchIx};
+        list = dir([refSearchDr filesep '**' filesep '*DMD' int2str(DMDix) '*_CONFIG1-REFERENCE*']);
+        if isempty(list)
+            list = dir([refSearchDr filesep '**' filesep '*DMD' int2str(DMDix) '*-REFERENCE*']);
+        end
+        if ~isempty(list)
+            break
+        end
     end
     switch length(list)
     case 0
-        error(['Could not find reference image within folder: ' dr])
+        error(['Could not find reference image within folder: ' dr ' or its parent folder'])
     case 1
         DMD1refFn = fullfile(list(1).folder, list(1).name);
         [refStack.(pathKey).IM, ~, desc] = ScanImageTiffWrapper(DMD1refFn);
@@ -91,7 +100,7 @@ for DMDix = DMDixs
         refStack.(pathKey).dmdPixel2SampleTransform = jj.dmdPixel2SampleTransform;
 
     otherwise
-        list = dir([dr filesep '**' filesep '*DMD' int2str(DMDix) '_CONFIG1-REFERENCE*.tif']);
+        list = dir([refSearchDr filesep '**' filesep '*DMD' int2str(DMDix) '_CONFIG1-REFERENCE*.tif']);
         switch length(list)
             case 0
                 error('Too many reference stacks found in the specified directory!');

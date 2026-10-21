@@ -14,6 +14,11 @@ function saveStructToH5(s, filename)
 %   Dataset sizes match MATLAB size(val). The file includes /row_major
 %   (uint8): 0 = column-major (MATLAB layout). See README.md
 %   "Reading H5 outside MATLAB".
+%
+%   Numeric/logical datasets with at least MIN_COMPRESS_NUMEL elements are
+%   written chunked with lossless deflate (gzip) compression, readable by any
+%   HDF5 reader (h5py, MATLAB h5read) without extra plugins. Large mostly-NaN
+%   arrays such as slap2/varFacDS shrink ~35x.
 
 if nargin < 2 || isempty(filename)
     error('saveStructToH5:MissingFilename', 'A destination filename must be provided.');
@@ -105,7 +110,8 @@ if islogical(val)
         return;
     end
     val = int8(val);
-    h5create(filename, path, size(val), 'Datatype', 'int8');
+    cArgs = compressionArgs(size(val), 1);
+    h5create(filename, path, size(val), 'Datatype', 'int8', cArgs{:});
     h5write(filename, path, val);
     return;
 end
@@ -120,13 +126,44 @@ if isnumeric(val)
     % Round-trip through cast to materialize a plain array of the declared
     % class without applying per-element arithmetic.
     plainVal = cast(val, dtype);
-    h5create(filename, path, sz, 'Datatype', dtype);
+    bytesPerElement = numel(typecast(plainVal(1), 'uint8'));
+    cArgs = compressionArgs(sz, bytesPerElement);
+    h5create(filename, path, sz, 'Datatype', dtype, cArgs{:});
     h5write(filename, path, plainVal);
     return;
 end
 
 error('saveStructToH5:UnsupportedType', ...
     'Unsupported value type ''%s'' at %s.', class(val), path);
+end
+
+
+function args = compressionArgs(sz, bytesPerElement)
+%COMPRESSIONARGS h5create arguments for chunked deflate compression.
+%   Small datasets are written contiguous (no arguments): chunking overhead
+%   outweighs any saving. Deflate level 4 without shuffle measured best on
+%   slap2/varFacDS (2.19 GB -> 0.06 GB, ~4 s per write).
+MIN_COMPRESS_NUMEL = 4096;
+DEFLATE_LEVEL = 4;
+if prod(sz) < MIN_COMPRESS_NUMEL
+    args = {};
+    return;
+end
+args = {'Deflate', DEFLATE_LEVEL, 'ChunkSize', chooseChunkSize(sz, bytesPerElement)};
+end
+
+
+function chunk = chooseChunkSize(sz, bytesPerElement)
+%CHOOSECHUNKSIZE Chunk of at most ~4 MB, shrinking trailing dimensions first
+%   so chunks stay contiguous along MATLAB's leading (fastest) dimensions,
+%   e.g. one rows x cols frame per chunk for rows x cols x frames arrays.
+TARGET_BYTES = 4e6;
+chunk = sz;
+for d = numel(chunk):-1:1
+    while prod(chunk) * bytesPerElement > TARGET_BYTES && chunk(d) > 1
+        chunk(d) = ceil(chunk(d) / 2);
+    end
+end
 end
 
 

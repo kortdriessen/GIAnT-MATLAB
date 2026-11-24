@@ -19,6 +19,13 @@ end
 if params.localizeOnly && (~isfield(params, 'localizeOutputFile') || isempty(params.localizeOutputFile))
     error('SILo:MissingLocalizeOutputFile', 'params.localizeOnly requires params.localizeOutputFile.');
 end
+% trialsPerProcess (hidden): if > 0, extract trials in separate MATLAB
+% processes of at most this many trials each (processAllTrials_Isolated), so
+% that memory the main process does not give back to the OS between trials
+% cannot accumulate over long recordings. 0 extracts all trials in this process.
+if ~isfield(params, 'trialsPerProcess') || isempty(params.trialsPerProcess)
+    params.trialsPerProcess = 0;
+end
 if ~nargin
     if ~isInteractiveSession()
         error('SILo:NonInteractive', 'No interactive display: pass the trial_table.h5 path (or its folder) to SILo.');
@@ -219,6 +226,7 @@ for DMDix = nDMDs:-1:1
     medIM = nanmedfilt2(actIM, 5.*[1 1]);
     actIM = actIM-medIM; %subtract a local baseline
     exptSummary.actIM{DMDix} = actIM;
+    sz = size(actIM);
 
     %user ROIs are in the frame of the trial they were annotated on; move them
     %into the consensus frame that actIM and extraction use
@@ -267,6 +275,11 @@ for DMDix = nDMDs:-1:1
     end
 
     if ~isempty(sources.R)
+        if params.trialsPerProcess > 0
+            processAllTrials = @(varargin) processAllTrials_Isolated(varargin{:}, savedr);
+        else
+            processAllTrials = @processAllTrials_Async;
+        end
         fns = trialTable.source_extraction.fn_raw(DMDix,:);
         if params.isSLAP2
             if isfield(trialTable, 'datadr') && ~isempty(trialTable.datadr)
@@ -276,11 +289,11 @@ for DMDix = nDMDs:-1:1
             end
             fls = trialTable.slap2_info.first_line(DMDix,:);
             els = trialTable.slap2_info.last_line(DMDix,:);
-            E = processAllTrials_Async(trialDataDr, fns, fls, els, selPix, sources, discardFrames, alignData, meanAligned, motOutput, roiData, validTrials, params);
+            E = processAllTrials(trialDataDr, fns, fls, els, selPix, sources, discardFrames, alignData, meanAligned, motOutput, roiData, validTrials, params);
         else % non-SLAP2 (registered movies live under motion_correction)
             fls = cell(1,numel(fns));
             els = cell(1,numel(fns));
-            E = processAllTrials_Async(mocodr, fns, fls, els, selPix, sources, discardFrames, alignData, meanAligned, motOutput, roiData, validTrials, params);
+            E = processAllTrials(mocodr, fns, fls, els, selPix, sources, discardFrames, alignData, meanAligned, motOutput, roiData, validTrials, params);
         end
         exptSummary.E(:,DMDix) = E;
     end
